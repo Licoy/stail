@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
+	"github.com/Licoy/stail"
 	"os"
-	"stail"
 	"strconv"
 )
 
@@ -22,5 +22,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println()
 	<-make(chan struct{})
 }
