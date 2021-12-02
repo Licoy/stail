@@ -11,8 +11,15 @@ import (
 )
 
 type STail interface {
-	Tail(filepath string, tailLine int, call func(content string)) (err error)
-	Total(filepath string, call func(content string)) (err error)
+	// Tail 在{filepath}文件中从末尾的{tailLine}行开始获取数据
+	Tail(filepath string, tailLine int, call func(content string)) (item STailItem, err error)
+	// TailTotal 在{filepath}文件从开头获取数据
+	TailTotal(filepath string, call func(content string)) (item STailItem, err error)
+}
+
+type STailItem interface {
+	Watch()
+	Close() error
 }
 
 type sTail struct {
@@ -20,8 +27,13 @@ type sTail struct {
 	opt Options
 }
 
-func New(opt Options) (st *sTail, err error) {
-	st = &sTail{os: runtime.GOOS, opt: opt}
+type sTailItem struct {
+	stdout   io.ReadCloser
+	callback func(string)
+}
+
+func New(opt Options) (res STail, err error) {
+	st := &sTail{os: runtime.GOOS, opt: opt}
 	var cp string
 	switch st.os {
 	case OsWindows:
@@ -41,10 +53,11 @@ func New(opt Options) (st *sTail, err error) {
 			}
 		}
 	}
+	res = st
 	return
 }
 
-func (s *sTail) Tail(filepath string, tailLine int, call func(content string)) (err error) {
+func (s *sTail) Tail(filepath string, tailLine int, callback func(string)) (item STailItem, err error) {
 	cmd, err := s.getCommand(filepath, tailLine)
 	if err != nil {
 		return
@@ -59,21 +72,12 @@ func (s *sTail) Tail(filepath string, tailLine int, call func(content string)) (
 	if err != nil {
 		return
 	}
-	reader := bufio.NewReader(stdout)
-	for {
-		line, errRs := reader.ReadString('\n')
-		if errRs != nil || io.EOF == errRs {
-			break
-		}
-		if call != nil {
-			call(line)
-		}
-	}
+	item = &sTailItem{stdout: stdout, callback: callback}
 	return
 }
 
-func (s *sTail) Total(filepath string, call func(content string)) (err error) {
-	return s.Tail(filepath, -1, call)
+func (s *sTail) TailTotal(filepath string, callback func(string)) (item STailItem, err error) {
+	return s.Tail(filepath, -1, callback)
 }
 
 func (s *sTail) getCommand(filepath string, tailLine int) (cmd *exec.Cmd, err error) {
@@ -111,4 +115,21 @@ func (s *sTail) linuxTail(filepath string, tailLine int) *exec.Cmd {
 	}
 	params = append(params, filepath)
 	return exec.Command(s.opt.UnixTailPath, params...)
+}
+
+func (s *sTailItem) Watch() {
+	reader := bufio.NewReader(s.stdout)
+	for {
+		line, errRs := reader.ReadString('\n')
+		if errRs != nil || io.EOF == errRs {
+			return
+		}
+		if s.callback != nil {
+			s.callback(line)
+		}
+	}
+}
+
+func (s *sTailItem) Close() error {
+	return s.stdout.Close()
 }

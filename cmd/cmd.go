@@ -16,12 +16,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	err = st.Tail(os.Args[1], atoi, func(content string) {
+	si, err := st.Tail(os.Args[1], atoi, func(content string) {
 		fmt.Print(content)
 	})
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println()
-	<-make(chan struct{})
+	si.Watch()
 }
