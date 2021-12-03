@@ -2,6 +2,7 @@ package stail
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -19,7 +20,7 @@ type STail interface {
 
 type STailItem interface {
 	Watch()
-	Close() error
+	Close() (err error)
 }
 
 type sTail struct {
@@ -28,8 +29,10 @@ type sTail struct {
 }
 
 type sTailItem struct {
-	stdout   io.ReadCloser
-	callback func(string)
+	stdout      io.ReadCloser
+	callback    func(string)
+	ctxCancelFn context.CancelFunc
+	closed      bool
 }
 
 func New(opt Options) (res STail, err error) {
@@ -58,21 +61,25 @@ func New(opt Options) (res STail, err error) {
 }
 
 func (s *sTail) Tail(filepath string, tailLine int, callback func(string)) (item STailItem, err error) {
-	cmd, err := s.getCommand(filepath, tailLine)
+	ctx, cancelFn := context.WithCancel(context.Background())
+	cmd, err := s.getCommand(ctx, filepath, tailLine)
 	if err != nil {
+		cancelFn()
 		return
 	}
 	var stdout io.ReadCloser
 	stdout, err = cmd.StdoutPipe()
 	if err != nil {
 		err = errors.New("get system pipe failed")
+		cancelFn()
 		return
 	}
 	err = cmd.Start()
 	if err != nil {
+		cancelFn()
 		return
 	}
-	item = &sTailItem{stdout: stdout, callback: callback}
+	item = &sTailItem{stdout: stdout, callback: callback, ctxCancelFn: cancelFn}
 	return
 }
 
@@ -80,12 +87,12 @@ func (s *sTail) TailTotal(filepath string, callback func(string)) (item STailIte
 	return s.Tail(filepath, -1, callback)
 }
 
-func (s *sTail) getCommand(filepath string, tailLine int) (cmd *exec.Cmd, err error) {
+func (s *sTail) getCommand(ctx context.Context, filepath string, tailLine int) (cmd *exec.Cmd, err error) {
 	switch s.os {
 	case OsWindows:
-		cmd = s.windowsTail(filepath, tailLine)
+		cmd = s.windowsTail(ctx, filepath, tailLine)
 	case OsLinux, OsDarwin:
-		cmd = s.linuxTail(filepath, tailLine)
+		cmd = s.linuxTail(ctx, filepath, tailLine)
 	default:
 		err = errors.New("not supported on the current platform")
 	}
@@ -103,18 +110,18 @@ func (s *sTail) lookPath(filenames ...string) (findPath string, err error) {
 	return
 }
 
-func (s *sTail) windowsTail(filepath string, tailLine int) *exec.Cmd {
-	return exec.Command(s.opt.PowerShellPath, "-Command", "Get-Content", "-Path", filepath,
+func (s *sTail) windowsTail(ctx context.Context, filepath string, tailLine int) *exec.Cmd {
+	return exec.CommandContext(ctx, s.opt.PowerShellPath, "-Command", "Get-Content", "-Path", filepath,
 		"-Tail", strconv.Itoa(tailLine), "-Wait")
 }
 
-func (s *sTail) linuxTail(filepath string, tailLine int) *exec.Cmd {
+func (s *sTail) linuxTail(ctx context.Context, filepath string, tailLine int) *exec.Cmd {
 	params := make([]string, 0, 3)
 	if tailLine >= 0 {
 		params = append(params, fmt.Sprintf("-%df", tailLine))
 	}
 	params = append(params, filepath)
-	return exec.Command(s.opt.UnixTailPath, params...)
+	return exec.CommandContext(ctx, s.opt.UnixTailPath, params...)
 }
 
 func (s *sTailItem) Watch() {
@@ -130,6 +137,17 @@ func (s *sTailItem) Watch() {
 	}
 }
 
-func (s *sTailItem) Close() error {
-	return s.stdout.Close()
+func (s *sTailItem) Close() (err error) {
+	if s.closed {
+		return
+	}
+	if s.ctxCancelFn != nil {
+		s.ctxCancelFn()
+	}
+	err = s.stdout.Close()
+	if err != nil {
+		return
+	}
+	s.closed = true
+	return
 }
